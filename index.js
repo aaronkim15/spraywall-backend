@@ -91,6 +91,17 @@ app.post('/climbs', async (req, res) => {
     }
 });
 
+app.get('/climbs', async(req, res) => {
+    try{
+        const result = await pool.query(
+            'SELECT id, name, grade, description FROM climbs WHERE archived_at IS NULL ORDER by name'
+        );
+        res.json(result.rows);
+    } catch(err){
+        res.status(500).json({error: err.message});
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
