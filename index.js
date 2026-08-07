@@ -102,6 +102,33 @@ app.get('/climbs', async(req, res) => {
     }
 });
 
+app.get('/climbs/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+    
+        const climbResult = await pool.query(
+            'SELECT id, name, grade, description FROM climbs WHERE id = $1', [id]
+        );
+
+        // If no climb matched, return 404.
+        if (climbResult.rows.length === 0) {
+            return res.status(404).json({ error: "Climb not found" });
+        }
+
+        const holdsResult = await pool.query(
+            'SELECT h.x_pos, h.y_pos FROM holds h JOIN climb_holds ch ON ch.hold_id = h.id WHERE ch.climb_id = $1', 
+            [id]);
+
+        // Combine into one response: the climb, plus its holds array.
+        res.json({
+            ...climbResult.rows[0],
+            holds: holdsResult.rows,
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
