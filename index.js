@@ -35,6 +35,65 @@ app.get('/walls', async (req, res) => {
     }
 });
 
+const fs = require("fs");
+
+const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
+const ROBOFLOW_MODEL = "hold-detector-rnvkl/2";
+
+app.post('/walls/:id/detect', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // 1. Read the wall image as base64
+        const imageBase64 = fs.readFileSync("wall-image.jpg", { encoding: "base64" });
+
+        // 2. Call Roboflow
+        const url = `https://serverless.roboflow.com/${ROBOFLOW_MODEL}?api_key=${ROBOFLOW_API_KEY}`;
+        const rfRes = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: imageBase64,
+        });
+        const rfData = await rfRes.json();
+        console.log(JSON.stringify(rfData, null, 2));
+
+        // 3. Image dimensions for normalizing
+        const imgW = rfData.image.width;
+        const imgH = rfData.image.height;
+
+        // 4. Normalize each prediction and insert, all in one transaction
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            for (const pred of rfData.predictions) {
+                const normalizedPoints = pred.points.map((p) => ({
+                    x: p.x / imgW,
+                    y: p.y / imgH,
+                }));
+
+                const centerX = pred.x / imgW;
+                const centerY = pred.y / imgH;
+
+                await client.query(
+                    'INSERT INTO holds (wall_id, x_pos, y_pos, points, source) VALUES ($1, $2, $3, $4::jsonb, $5)',
+                    [id, centerX, centerY, JSON.stringify(normalizedPoints), 'roboflow']
+                );
+            }
+
+            await client.query('COMMIT');
+            res.json({ inserted: rfData.predictions.length });
+        } catch (err) {
+            await client.query('ROLLBACK');
+            throw err;
+        } finally {
+            client.release();
+        }
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // POST /climbs — save a new climb with its holds
 app.post('/climbs', async (req, res) => {
     const { name, grade, description, holds, wallId, creatorId } = req.body;
@@ -105,21 +164,19 @@ app.get('/climbs', async(req, res) => {
 app.get('/climbs/:id', async (req, res) => {
     const { id } = req.params;
     try {
-    
+
         const climbResult = await pool.query(
             'SELECT id, name, grade, description FROM climbs WHERE id = $1', [id]
         );
 
-        // If no climb matched, return 404.
         if (climbResult.rows.length === 0) {
             return res.status(404).json({ error: "Climb not found" });
         }
 
         const holdsResult = await pool.query(
-            'SELECT h.x_pos, h.y_pos FROM holds h JOIN climb_holds ch ON ch.hold_id = h.id WHERE ch.climb_id = $1', 
+            'SELECT h.x_pos, h.y_pos, h.points FROM holds h JOIN climb_holds ch ON ch.hold_id = h.id WHERE ch.climb_id = $1',
             [id]);
 
-        // Combine into one response: the climb, plus its holds array.
         res.json({
             ...climbResult.rows[0],
             holds: holdsResult.rows,
