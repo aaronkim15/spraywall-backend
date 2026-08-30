@@ -34,7 +34,20 @@
             res.status(500).json({ error: err.message });
         }
     });
-
+    
+        // GET /walls/:id/holds — the full hold catalog for a wall
+    app.get('/walls/:id/holds', async (req, res) => {
+        const { id } = req.params;
+        try {
+            const result = await pool.query(
+                'SELECT id, x_pos, y_pos, points, source FROM holds WHERE wall_id = $1',
+                [id]
+            );
+            res.json({ holds: result.rows });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
     const fs = require("fs");
 
     const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
