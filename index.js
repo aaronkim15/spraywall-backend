@@ -110,6 +110,45 @@
         }
     });
 
+    // DELETE /holds/:id — remove a single hold
+    app.delete('/holds/:id', async (req, res) => {
+        const { id } = req.params;
+        try {
+            const result = await pool.query(
+                'DELETE FROM holds WHERE id = $1 RETURNING id',
+                [id]
+            );
+            if (result.rows.length === 0) {
+                return res.status(404).json({ error: 'Hold not found' });
+            }
+            res.json({ deleted: result.rows[0].id });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // POST /walls/:id/holds — add a single manual hold
+    app.post('/walls/:id/holds', async (req, res) => {
+        const { id } = req.params;
+        const { points, x_pos, y_pos } = req.body;
+
+        if (!Array.isArray(points) || typeof x_pos !== 'number' || typeof y_pos !== 'number') {
+            return res.status(400).json({ error: 'points (array), x_pos, y_pos (numbers) required' });
+        }
+
+        try {
+            const result = await pool.query(
+                `INSERT INTO holds (wall_id, x_pos, y_pos, points, source)
+                VALUES ($1, $2, $3, $4::jsonb, $5)
+                RETURNING *`,
+                [id, x_pos, y_pos, JSON.stringify(points), 'manual']
+            );
+            res.status(201).json({ hold: result.rows[0] });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+    
     // POST /climbs — save a new climb with its holds
     app.post('/climbs', async (req, res) => {
         const { name, grade, description, holds, wallId, creatorId } = req.body;
