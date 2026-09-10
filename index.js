@@ -79,7 +79,8 @@
             const client = await pool.connect();
             try {
                 await client.query('BEGIN');
-
+                await client.query("DELETE FROM holds WHERE source = 'roboflow'");
+                
                 for (const pred of rfData.predictions) {
                     const normalizedPoints = pred.points.map((p) => ({
                         x: p.x / imgW,
