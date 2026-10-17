@@ -349,11 +349,12 @@
         }
         try {
             const hash = await bcrypt.hash(password, 10);
+            const name = displayName || email; // users.name is NOT NULL
             const result = await pool.query(
-                `INSERT INTO users (email, password_hash, display_name)
-                 VALUES (lower($1), $2, $3)
+                `INSERT INTO users (name, email, password_hash, display_name)
+                 VALUES ($1, lower($2), $3, $4)
                  RETURNING id, email, display_name`,
-                [email, hash, displayName || null]
+                [name, email, hash, displayName || null]
             );
             const user = result.rows[0];
             const token = jwt.sign({ sub: user.id }, JWT_SECRET, { expiresIn: TOKEN_TTL });
