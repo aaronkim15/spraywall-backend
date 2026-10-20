@@ -266,6 +266,56 @@
         }
     });
 
+    // POST /walls/:id/refine — optionally clean up hand-drawn outlines with SAM.
+    // Returns the outlines unchanged when SAM is not configured.
+    app.post('/walls/:id/refine', async (req, res) => {
+        const { id } = req.params;
+        const { outlines } = req.body;
+        if (!Array.isArray(outlines) || outlines.length === 0) {
+            return res.status(400).json({ error: 'outlines required' });
+        }
+        try {
+            if (!SAM_ENDPOINT) {
+                return res.json({ outlines, refined: false });
+            }
+            const imgRes = await pool.query(
+                'SELECT image_data, image_width, image_height FROM walls WHERE id = $1',
+                [id]
+            );
+            const row = imgRes.rows[0];
+            if (!row || !row.image_data || !row.image_width || !row.image_height) {
+                return res.status(400).json({ error: 'no wall photo' });
+            }
+            const imageBase64 = row.image_data.toString('base64');
+            const imgW = row.image_width;
+            const imgH = row.image_height;
+
+            // Each outline's centroid becomes a SAM point prompt (in pixels).
+            const predictions = outlines.map((o) => {
+                const cx = o.reduce((s, p) => s + p.x, 0) / o.length;
+                const cy = o.reduce((s, p) => s + p.y, 0) / o.length;
+                return { x: cx * imgW, y: cy * imgH };
+            });
+
+            let refined = null;
+            try {
+                refined = await refineWithSam(imageBase64, predictions);
+            } catch (e) {
+                console.log('refine SAM failed:', e.message);
+            }
+
+            const out = outlines.map((o, i) => {
+                if (refined && refined[i]) {
+                    return refined[i].points.map((p) => ({ x: p.x / imgW, y: p.y / imgH }));
+                }
+                return o; // SAM found nothing here: keep the hand-drawn outline
+            });
+            res.json({ outlines: out, refined: !!refined });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
     // DELETE /holds/:id — remove a single hold
     app.delete('/holds/:id', async (req, res) => {
         const { id } = req.params;
@@ -306,34 +356,30 @@
     });
 
     // POST /climbs — save a new climb with its holds
-    app.post('/climbs', async (req, res) => {
-        const { name, grade, description, holds, wallId, creatorId } = req.body;
+    app.post('/climbs', requireAuth, async (req, res) => {
+        const { name, grade, description, wallId, holdIds } = req.body;
 
-        if(name == "" || !Array.isArray(holds)){
-            res.status(400).json({error: "basic validation issues"});
+        if (!name || !name.trim() || !Array.isArray(holdIds) || holdIds.length === 0) {
+            return res.status(400).json({ error: 'name and at least one hold are required' });
         }
 
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
 
+            // creator comes from the auth token, never from the client body
             const climbResult = await client.query(
-                'INSERT INTO climbs(wall_id, creator_id, name, grade, description) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-                [wallId, creatorId, name, grade, description]
+                'INSERT INTO climbs (wall_id, creator_id, name, grade, description) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+                [wallId, req.userId, name.trim(), grade || null, description || null]
             );
             const climbId = climbResult.rows[0].id;
 
-            for (const hold of holds) {
-                const holdsResult = await client.query(
-                    'INSERT INTO holds(wall_id, x_pos, y_pos) VALUES($1, $2, $3) RETURNING id',
-                    [wallId, hold.x, hold.y]
-                );
-                const holdId = holdsResult.rows[0].id;
-
+            // Link EXISTING holds to this climb. We do not create new holds here.
+            for (const holdId of holdIds) {
                 await client.query(
-                    'INSERT INTO climb_holds(climb_id, hold_id) VALUES($1, $2)',
+                    'INSERT INTO climb_holds (climb_id, hold_id) VALUES ($1, $2)',
                     [climbId, holdId]
-                )
+                );
             }
 
             await client.query('COMMIT');
