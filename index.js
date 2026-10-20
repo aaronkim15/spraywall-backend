@@ -133,6 +133,8 @@
                 [req.file.buffer, req.file.mimetype, width, height, id]
             );
             if (result.rowCount === 0) return res.status(404).json({ error: 'wall not found' });
+            // A new photo changes the coordinate basis, so old holds no longer apply.
+            await pool.query('DELETE FROM holds WHERE wall_id = $1', [id]);
             res.json({ ok: true, width, height });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -168,6 +170,7 @@
                 [id]
             );
             if (result.rowCount === 0) return res.status(404).json({ error: 'wall not found' });
+            await pool.query('DELETE FROM holds WHERE wall_id = $1', [id]);
             res.json({ ok: true });
         } catch (err) {
             res.status(500).json({ error: err.message });
