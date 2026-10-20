@@ -136,6 +136,23 @@
         }
     });
 
+    // DELETE /walls/:id/image — clear the stored photo.
+    app.delete('/walls/:id/image', async (req, res) => {
+        const { id } = req.params;
+        try {
+            const result = await pool.query(
+                `UPDATE walls
+                 SET image_data = NULL, image_mime = NULL, image_width = NULL, image_height = NULL
+                 WHERE id = $1 RETURNING id`,
+                [id]
+            );
+            if (result.rowCount === 0) return res.status(404).json({ error: 'wall not found' });
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
     const ROBOFLOW_API_KEY = process.env.ROBOFLOW_API_KEY;
     const ROBOFLOW_MODEL = "hold-detector-rnvkl/2";
 
