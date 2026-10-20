@@ -12,7 +12,25 @@
     const upload = multer({
         storage: multer.memoryStorage(),
         limits: { fileSize: 12 * 1024 * 1024 },
+        fileFilter: (req, file, cb) => {
+            // quick mimetype gate; the route also checks the real bytes
+            cb(null, file.mimetype.startsWith('image/'));
+        },
     });
+
+    // Verify the actual bytes look like a known image format (not a spoofed file).
+    function isImageBuffer(buf) {
+        if (!buf || buf.length < 12) return false;
+        if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return true; // JPEG
+        if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return true; // PNG
+        if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return true; // GIF
+        if (buf.slice(0, 4).toString('ascii') === 'RIFF' && buf.slice(8, 12).toString('ascii') === 'WEBP') return true; // WEBP
+        if (buf.slice(4, 8).toString('ascii') === 'ftyp') { // HEIC/HEIF (iPhone)
+            const brand = buf.slice(8, 12).toString('ascii');
+            if (['heic', 'heix', 'mif1', 'msf1', 'hevc', 'hevx'].includes(brand)) return true;
+        }
+        return false;
+    }
 
     // Optional SAM refinement service. Unset = skip SAM, use Roboflow polygons.
     const SAM_ENDPOINT = process.env.SAM_ENDPOINT_URL;
@@ -100,6 +118,9 @@
     app.post('/walls/:id/image', upload.single('image'), async (req, res) => {
         const { id } = req.params;
         if (!req.file) return res.status(400).json({ error: 'image file required' });
+        if (!isImageBuffer(req.file.buffer)) {
+            return res.status(400).json({ error: 'file is not a valid image' });
+        }
 
         const width = parseInt(req.body.width, 10) || null;
         const height = parseInt(req.body.height, 10) || null;
