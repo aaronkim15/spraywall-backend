@@ -408,7 +408,7 @@
         try {
 
             const climbResult = await pool.query(
-                'SELECT id, name, grade, description FROM climbs WHERE id = $1', [id]
+                'SELECT id, name, grade, description, feet_rules FROM climbs WHERE id = $1', [id]
             );
 
             if (climbResult.rows.length === 0) {
@@ -416,7 +416,7 @@
             }
 
             const holdsResult = await pool.query(
-                'SELECT h.x_pos, h.y_pos, h.points FROM holds h JOIN climb_holds ch ON ch.hold_id = h.id WHERE ch.climb_id = $1',
+                'SELECT h.id, h.x_pos, h.y_pos, h.points, ch.role FROM holds h JOIN climb_holds ch ON ch.hold_id = h.id WHERE ch.climb_id = $1',
                 [id]);
 
             res.json({
