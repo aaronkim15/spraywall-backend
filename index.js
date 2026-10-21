@@ -357,9 +357,9 @@
 
     // POST /climbs — save a new climb with its holds
     app.post('/climbs', requireAuth, async (req, res) => {
-        const { name, grade, description, wallId, holdIds } = req.body;
+        const { name, grade, description, feetRules, wallId, holds } = req.body;
 
-        if (!name || !name.trim() || !Array.isArray(holdIds) || holdIds.length === 0) {
+        if (!name || !name.trim() || !Array.isArray(holds) || holds.length === 0) {
             return res.status(400).json({ error: 'name and at least one hold are required' });
         }
 
@@ -369,16 +369,16 @@
 
             // creator comes from the auth token, never from the client body
             const climbResult = await client.query(
-                'INSERT INTO climbs (wall_id, creator_id, name, grade, description) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-                [wallId, req.userId, name.trim(), grade || null, description || null]
+                'INSERT INTO climbs (wall_id, creator_id, name, grade, description, feet_rules) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+                [wallId, req.userId, name.trim(), grade || null, description || null, feetRules || null]
             );
             const climbId = climbResult.rows[0].id;
 
-            // Link EXISTING holds to this climb. We do not create new holds here.
-            for (const holdId of holdIds) {
+            // Link EXISTING holds to this climb, each with its role. No new holds created.
+            for (const h of holds) {
                 await client.query(
-                    'INSERT INTO climb_holds (climb_id, hold_id) VALUES ($1, $2)',
-                    [climbId, holdId]
+                    'INSERT INTO climb_holds (climb_id, hold_id, role) VALUES ($1, $2, $3)',
+                    [climbId, h.id, h.role || 'hand']
                 );
             }
 
