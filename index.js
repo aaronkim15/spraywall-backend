@@ -355,13 +355,28 @@
         }
     });
 
+    // Shared climb-hold validation — the authoritative copy of the UI rules.
+    function validateClimbHolds(holds) {
+        if (!Array.isArray(holds) || holds.length === 0) return 'at least one hold is required';
+        const counts = {};
+        for (const h of holds) counts[h.role] = (counts[h.role] || 0) + 1;
+        if (!counts.start) return 'a start hold is required';
+        if (!counts.finish) return 'a finish hold is required';
+        if (!counts.hand) return 'a hybrid hold is required';
+        if (counts.start > 2) return 'max 2 start holds';
+        if (counts.finish > 2) return 'max 2 finish holds';
+        return null;
+    }
+
     // POST /climbs — save a new climb with its holds
     app.post('/climbs', requireAuth, async (req, res) => {
         const { name, grade, description, feetRules, wallId, holds } = req.body;
 
-        if (!name || !name.trim() || !Array.isArray(holds) || holds.length === 0) {
-            return res.status(400).json({ error: 'name and at least one hold are required' });
+        if (!name || !name.trim()) {
+            return res.status(400).json({ error: 'name is required' });
         }
+        const vErr = validateClimbHolds(holds);
+        if (vErr) return res.status(400).json({ error: vErr });
 
         const client = await pool.connect();
         try {
@@ -425,6 +440,66 @@
             });
         } catch (err) {
             res.status(500).json({ error: err.message });
+        }
+    });
+
+    // DELETE /climbs/:id — soft-delete (archive) a climb. Only its creator may do this.
+    app.delete('/climbs/:id', requireAuth, async (req, res) => {
+        const { id } = req.params;
+        try {
+            const result = await pool.query(
+                'UPDATE climbs SET archived_at = now() WHERE id = $1 AND creator_id = $2 AND archived_at IS NULL RETURNING id',
+                [id, req.userId]
+            );
+            if (result.rows.length === 0) {
+                return res.status(404).json({ error: 'Climb not found or not yours' });
+            }
+            res.status(204).end();
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // PUT /climbs/:id — update a climb and replace its holds. Creator only.
+    app.put('/climbs/:id', requireAuth, async (req, res) => {
+        const { id } = req.params;
+        const { name, grade, description, feetRules, holds } = req.body;
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({ error: 'name is required' });
+        }
+        const vErr = validateClimbHolds(holds);
+        if (vErr) return res.status(400).json({ error: vErr });
+
+        const client = await pool.connect();
+        try {
+            await client.query('BEGIN');
+
+            const upd = await client.query(
+                'UPDATE climbs SET name = $1, grade = $2, description = $3, feet_rules = $4 WHERE id = $5 AND creator_id = $6 AND archived_at IS NULL RETURNING id',
+                [name.trim(), grade || null, description || null, feetRules || null, id, req.userId]
+            );
+            if (upd.rows.length === 0) {
+                await client.query('ROLLBACK');
+                return res.status(404).json({ error: 'Climb not found or not yours' });
+            }
+
+            // Replace the hold set wholesale: clear the old links, insert the new ones.
+            await client.query('DELETE FROM climb_holds WHERE climb_id = $1', [id]);
+            for (const h of holds) {
+                await client.query(
+                    'INSERT INTO climb_holds (climb_id, hold_id, role) VALUES ($1, $2, $3)',
+                    [id, h.id, h.role || 'hand']
+                );
+            }
+
+            await client.query('COMMIT');
+            res.json({ id });
+        } catch (err) {
+            await client.query('ROLLBACK');
+            res.status(500).json({ error: err.message });
+        } finally {
+            client.release();
         }
     });
 
