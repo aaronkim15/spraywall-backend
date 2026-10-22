@@ -89,7 +89,8 @@
         try {
             const result = await pool.query(
                 `SELECT id, name, location, image_width, image_height,
-                        (image_data IS NOT NULL) AS has_image
+                        (image_data IS NOT NULL) AS has_image,
+                        md5(image_data) AS image_version
                  FROM walls WHERE id = $1`,
                 [id]
             );
@@ -152,7 +153,7 @@
             const row = result.rows[0];
             if (!row || !row.image_data) return res.status(404).json({ error: 'no image' });
             res.set('Content-Type', row.image_mime || 'image/jpeg');
-            res.set('Cache-Control', 'no-cache');
+            res.set('Cache-Control', 'public, max-age=31536000, immutable');
             res.send(row.image_data);
         } catch (err) {
             res.status(500).json({ error: err.message });
