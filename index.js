@@ -412,7 +412,7 @@
         try{
             const result = await pool.query(
                 `SELECT c.id, c.name, c.grade, c.description,
-                        (SELECT count(*)::int FROM climb_sends cs WHERE cs.climb_id = c.id) AS send_count
+                        (SELECT count(*)::int FROM climb_sends cs WHERE cs.climb_id = c.id AND cs.sent = true) AS send_count
                  FROM climbs c WHERE c.archived_at IS NULL ORDER BY c.name`
             );
             res.json(result.rows);
@@ -450,7 +450,7 @@
                         md5(u.avatar_data) AS avatar_version
                  FROM climb_sends cs
                  JOIN users u ON u.id = cs.user_id
-                 WHERE cs.climb_id = $1
+                 WHERE cs.climb_id = $1 AND cs.sent = true
                  ORDER BY cs.created_at DESC`, [id]);
 
             res.json({
@@ -529,8 +529,8 @@
         const { id } = req.params;
         try {
             await pool.query(
-                `INSERT INTO climb_sends (climb_id, user_id) VALUES ($1, $2)
-                 ON CONFLICT (climb_id, user_id) DO NOTHING`,
+                `INSERT INTO climb_sends (climb_id, user_id, sent) VALUES ($1, $2, true)
+                 ON CONFLICT (climb_id, user_id) DO UPDATE SET sent = true`,
                 [id, req.userId]
             );
             res.status(201).json({ ok: true });
@@ -543,8 +543,40 @@
     app.delete('/climbs/:id/send', requireAuth, async (req, res) => {
         const { id } = req.params;
         try {
-            await pool.query('DELETE FROM climb_sends WHERE climb_id = $1 AND user_id = $2', [id, req.userId]);
+            await pool.query('UPDATE climb_sends SET sent = false WHERE climb_id = $1 AND user_id = $2', [id, req.userId]);
             res.status(204).end();
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // PATCH /climbs/:id/attempts — set the current user's attempt count for this climb.
+    app.patch('/climbs/:id/attempts', requireAuth, async (req, res) => {
+        const { id } = req.params;
+        let attempts = parseInt(req.body.attempts, 10);
+        if (isNaN(attempts) || attempts < 0) attempts = 0;
+        try {
+            await pool.query(
+                `INSERT INTO climb_sends (climb_id, user_id, attempts) VALUES ($1, $2, $3)
+                 ON CONFLICT (climb_id, user_id) DO UPDATE SET attempts = EXCLUDED.attempts`,
+                [id, req.userId, attempts]
+            );
+            res.json({ attempts });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // GET /climbs/:id/me — the current user's log for this climb (sent + attempts).
+    app.get('/climbs/:id/me', requireAuth, async (req, res) => {
+        const { id } = req.params;
+        try {
+            const result = await pool.query(
+                'SELECT sent, attempts FROM climb_sends WHERE climb_id = $1 AND user_id = $2',
+                [id, req.userId]
+            );
+            const row = result.rows[0] || { sent: false, attempts: 0 };
+            res.json(row);
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
