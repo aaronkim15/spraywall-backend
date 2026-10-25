@@ -411,7 +411,9 @@
     app.get('/climbs', async(req, res) => {
         try{
             const result = await pool.query(
-                'SELECT id, name, grade, description FROM climbs WHERE archived_at IS NULL ORDER by name'
+                `SELECT c.id, c.name, c.grade, c.description,
+                        (SELECT count(*)::int FROM climb_sends cs WHERE cs.climb_id = c.id) AS send_count
+                 FROM climbs c WHERE c.archived_at IS NULL ORDER BY c.name`
             );
             res.json(result.rows);
         } catch(err){
@@ -424,7 +426,12 @@
         try {
 
             const climbResult = await pool.query(
-                'SELECT id, name, grade, description, feet_rules FROM climbs WHERE id = $1', [id]
+                `SELECT c.id, c.name, c.grade, c.description, c.feet_rules, c.created_at,
+                        c.creator_id,
+                        COALESCE(u.display_name, u.name, u.email) AS setter_name
+                 FROM climbs c
+                 LEFT JOIN users u ON u.id = c.creator_id
+                 WHERE c.id = $1`, [id]
             );
 
             if (climbResult.rows.length === 0) {
@@ -435,9 +442,22 @@
                 'SELECT h.id, h.x_pos, h.y_pos, h.points, ch.role FROM holds h JOIN climb_holds ch ON ch.hold_id = h.id WHERE ch.climb_id = $1',
                 [id]);
 
+            // Who has sent this climb (most recent first).
+            const sendsResult = await pool.query(
+                `SELECT cs.user_id, cs.created_at,
+                        COALESCE(u.display_name, u.name, u.email) AS display_name,
+                        (u.avatar_data IS NOT NULL) AS has_avatar,
+                        md5(u.avatar_data) AS avatar_version
+                 FROM climb_sends cs
+                 JOIN users u ON u.id = cs.user_id
+                 WHERE cs.climb_id = $1
+                 ORDER BY cs.created_at DESC`, [id]);
+
             res.json({
                 ...climbResult.rows[0],
                 holds: holdsResult.rows,
+                sends: sendsResult.rows,
+                send_count: sendsResult.rows.length,
             });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -501,6 +521,32 @@
             res.status(500).json({ error: err.message });
         } finally {
             client.release();
+        }
+    });
+
+    // POST /climbs/:id/send — log that the current user sent this climb.
+    app.post('/climbs/:id/send', requireAuth, async (req, res) => {
+        const { id } = req.params;
+        try {
+            await pool.query(
+                `INSERT INTO climb_sends (climb_id, user_id) VALUES ($1, $2)
+                 ON CONFLICT (climb_id, user_id) DO NOTHING`,
+                [id, req.userId]
+            );
+            res.status(201).json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // DELETE /climbs/:id/send — remove the current user's send.
+    app.delete('/climbs/:id/send', requireAuth, async (req, res) => {
+        const { id } = req.params;
+        try {
+            await pool.query('DELETE FROM climb_sends WHERE climb_id = $1 AND user_id = $2', [id, req.userId]);
+            res.status(204).end();
+        } catch (err) {
+            res.status(500).json({ error: err.message });
         }
     });
 
