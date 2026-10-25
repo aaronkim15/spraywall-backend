@@ -412,7 +412,7 @@
         try{
             const result = await pool.query(
                 `SELECT c.id, c.name, c.grade, c.description,
-                        (SELECT count(*)::int FROM climb_sends cs WHERE cs.climb_id = c.id AND cs.sent = true) AS send_count
+                        (SELECT count(DISTINCT cs.user_id)::int FROM climb_sends cs WHERE cs.climb_id = c.id) AS send_count
                  FROM climbs c WHERE c.archived_at IS NULL ORDER BY c.name`
             );
             res.json(result.rows);
@@ -444,20 +444,23 @@
 
             // Who has sent this climb (most recent first).
             const sendsResult = await pool.query(
-                `SELECT cs.user_id, cs.created_at,
+                `SELECT cs.id, cs.user_id, cs.attempts, cs.created_at,
                         COALESCE(u.display_name, u.name, u.email) AS display_name,
                         (u.avatar_data IS NOT NULL) AS has_avatar,
                         md5(u.avatar_data) AS avatar_version
                  FROM climb_sends cs
                  JOIN users u ON u.id = cs.user_id
-                 WHERE cs.climb_id = $1 AND cs.sent = true
+                 WHERE cs.climb_id = $1
                  ORDER BY cs.created_at DESC`, [id]);
+
+            // send_count = distinct climbers who have sent it (not total ascents)
+            const distinctClimbers = new Set(sendsResult.rows.map((r) => r.user_id)).size;
 
             res.json({
                 ...climbResult.rows[0],
                 holds: holdsResult.rows,
                 sends: sendsResult.rows,
-                send_count: sendsResult.rows.length,
+                send_count: distinctClimbers,
             });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -524,59 +527,34 @@
         }
     });
 
-    // POST /climbs/:id/send — log that the current user sent this climb.
+    // POST /climbs/:id/send — log a new ascent. Attempts are captured now and
+    // are immutable; logging again creates another ascent (full history).
     app.post('/climbs/:id/send', requireAuth, async (req, res) => {
         const { id } = req.params;
-        try {
-            await pool.query(
-                `INSERT INTO climb_sends (climb_id, user_id, sent) VALUES ($1, $2, true)
-                 ON CONFLICT (climb_id, user_id) DO UPDATE SET sent = true`,
-                [id, req.userId]
-            );
-            res.status(201).json({ ok: true });
-        } catch (err) {
-            res.status(500).json({ error: err.message });
-        }
-    });
-
-    // DELETE /climbs/:id/send — remove the current user's send.
-    app.delete('/climbs/:id/send', requireAuth, async (req, res) => {
-        const { id } = req.params;
-        try {
-            await pool.query('UPDATE climb_sends SET sent = false WHERE climb_id = $1 AND user_id = $2', [id, req.userId]);
-            res.status(204).end();
-        } catch (err) {
-            res.status(500).json({ error: err.message });
-        }
-    });
-
-    // PATCH /climbs/:id/attempts — set the current user's attempt count for this climb.
-    app.patch('/climbs/:id/attempts', requireAuth, async (req, res) => {
-        const { id } = req.params;
         let attempts = parseInt(req.body.attempts, 10);
-        if (isNaN(attempts) || attempts < 0) attempts = 0;
-        try {
-            await pool.query(
-                `INSERT INTO climb_sends (climb_id, user_id, attempts) VALUES ($1, $2, $3)
-                 ON CONFLICT (climb_id, user_id) DO UPDATE SET attempts = EXCLUDED.attempts`,
-                [id, req.userId, attempts]
-            );
-            res.json({ attempts });
-        } catch (err) {
-            res.status(500).json({ error: err.message });
-        }
-    });
-
-    // GET /climbs/:id/me — the current user's log for this climb (sent + attempts).
-    app.get('/climbs/:id/me', requireAuth, async (req, res) => {
-        const { id } = req.params;
+        if (isNaN(attempts) || attempts < 1) attempts = 1;
         try {
             const result = await pool.query(
-                'SELECT sent, attempts FROM climb_sends WHERE climb_id = $1 AND user_id = $2',
-                [id, req.userId]
+                `INSERT INTO climb_sends (climb_id, user_id, attempts) VALUES ($1, $2, $3)
+                 RETURNING id, attempts, created_at`,
+                [id, req.userId, attempts]
             );
-            const row = result.rows[0] || { sent: false, attempts: 0 };
-            res.json(row);
+            res.status(201).json(result.rows[0]);
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // DELETE /climbs/sends/:sendId — remove one of the current user's ascents.
+    app.delete('/climbs/sends/:sendId', requireAuth, async (req, res) => {
+        const { sendId } = req.params;
+        try {
+            const result = await pool.query(
+                'DELETE FROM climb_sends WHERE id = $1 AND user_id = $2 RETURNING id',
+                [sendId, req.userId]
+            );
+            if (result.rows.length === 0) return res.status(404).json({ error: 'send not found or not yours' });
+            res.status(204).end();
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
