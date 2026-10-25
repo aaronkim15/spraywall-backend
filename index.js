@@ -9,6 +9,8 @@
     app.use(express.json());
 
     // Uploaded photos arrive in memory as req.file.buffer (never written to disk).
+    const sharp = require('sharp');
+
     const upload = multer({
         storage: multer.memoryStorage(),
         limits: { fileSize: 12 * 1024 * 1024 },
@@ -70,6 +72,42 @@
         connectionString: process.env.DATABASE_URL,
         ssl: { rejectUnauthorized: false },
     });
+
+    // Role -> outline colour for rendered thumbnails (matches the frontend).
+    const ROLE_HEX = { start: '#ef4444', finish: '#ef4444', hand: '#ffffff', foot: '#22c55e' };
+
+    // Render a climb's thumbnail (wall photo + hold outlines) once and cache it on the row.
+    async function generateThumb(climbId) {
+        const climbRes = await pool.query('SELECT wall_id FROM climbs WHERE id = $1', [climbId]);
+        if (climbRes.rows.length === 0) return null;
+        const wallRes = await pool.query('SELECT image_data FROM walls WHERE id = $1', [climbRes.rows[0].wall_id]);
+        const imgData = wallRes.rows[0] && wallRes.rows[0].image_data;
+        if (!imgData) return null;
+
+        const holdsRes = await pool.query(
+            'SELECT h.points, ch.role FROM climb_holds ch JOIN holds h ON h.id = ch.hold_id WHERE ch.climb_id = $1',
+            [climbId]
+        );
+        const meta = await sharp(imgData).metadata();
+        const W = meta.width, H = meta.height;
+        const stroke = Math.max(2, Math.round(Math.min(W, H) * 0.006));
+        const polys = holdsRes.rows.map((r) => {
+            if (!r.points) return '';
+            const pts = r.points.map((pt) => `${(pt.x * W).toFixed(1)},${(pt.y * H).toFixed(1)}`).join(' ');
+            const color = ROLE_HEX[r.role] || '#9aa0a6';
+            return `<polygon points="${pts}" fill="none" stroke="${color}" stroke-width="${stroke}"/>`;
+        }).join('');
+        const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${polys}</svg>`;
+
+        const buf = await sharp(imgData)
+            .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+            .resize({ width: 400, withoutEnlargement: true })
+            .jpeg({ quality: 72 })
+            .toBuffer();
+
+        await pool.query('UPDATE climbs SET thumb_data = $1, thumb_mime = $2 WHERE id = $3', [buf, 'image/jpeg', climbId]);
+        return buf;
+    }
 
     // Health check: confirms the server is up AND can reach the database.
     app.get('/health', async (req, res) => {
@@ -146,6 +184,7 @@
             if (result.rowCount === 0) return res.status(404).json({ error: 'wall not found' });
             // A new photo changes the coordinate basis, so old holds no longer apply.
             await pool.query('DELETE FROM holds WHERE wall_id = $1', [id]);
+            await pool.query('UPDATE climbs SET thumb_data = NULL, thumb_mime = NULL WHERE wall_id = $1', [id]);
             res.json({ ok: true, width, height });
         } catch (err) {
             res.status(500).json({ error: err.message });
@@ -423,6 +462,7 @@
             const result = await pool.query(
                 `SELECT c.id, c.name, c.grade, c.description, c.created_at,
                         COALESCE(u.display_name, u.name, u.email) AS setter_name,
+                        md5(c.thumb_data) AS thumb_version,
                         (SELECT count(DISTINCT cs.user_id)::int FROM climb_sends cs WHERE cs.climb_id = c.id) AS send_count,
                         EXISTS (SELECT 1 FROM climb_sends cs WHERE cs.climb_id = c.id AND cs.user_id = $1) AS sent_by_me
                  FROM climbs c
@@ -430,25 +470,33 @@
                  WHERE c.archived_at IS NULL ORDER BY c.name`,
                 [req.userId || null]
             );
-            const climbs = result.rows;
-
-            // Attach each climb's holds (points + role) for list thumbnails.
-            const holdsRes = await pool.query(
-                `SELECT ch.climb_id, h.points, ch.role
-                 FROM climb_holds ch
-                 JOIN holds h ON h.id = ch.hold_id
-                 JOIN climbs c ON c.id = ch.climb_id
-                 WHERE c.archived_at IS NULL`
-            );
-            const byClimb = {};
-            for (const r of holdsRes.rows) {
-                (byClimb[r.climb_id] ||= []).push({ points: r.points, role: r.role });
-            }
-            for (const c of climbs) c.holds = byClimb[c.id] || [];
-
-            res.json(climbs);
+            res.json(result.rows);
         } catch(err){
             res.status(500).json({error: err.message});
+        }
+    });
+
+    // GET /climbs/:id/thumb — the rendered thumbnail (lazy-generated, then cached).
+    app.get('/climbs/:id/thumb', async (req, res) => {
+        const { id } = req.params;
+        try {
+            const r = await pool.query('SELECT thumb_data, thumb_mime FROM climbs WHERE id = $1', [id]);
+            if (r.rows.length === 0) return res.status(404).json({ error: 'climb not found' });
+            let { thumb_data, thumb_mime } = r.rows[0];
+            let justMade = false;
+            if (!thumb_data) {
+                thumb_data = await generateThumb(id);
+                thumb_mime = 'image/jpeg';
+                justMade = true;
+                if (!thumb_data) return res.status(404).json({ error: 'no thumbnail' });
+            }
+            res.set('Content-Type', thumb_mime || 'image/jpeg');
+            // Once cached on the row, the URL carries its hash -> cache forever.
+            // The just-generated "pending" response is not cached (its URL has no hash yet).
+            res.set('Cache-Control', justMade ? 'no-cache' : 'public, max-age=31536000, immutable');
+            res.send(thumb_data);
+        } catch (err) {
+            res.status(500).json({ error: err.message });
         }
     });
 
@@ -548,6 +596,7 @@
                 );
             }
 
+            await client.query('UPDATE climbs SET thumb_data = NULL, thumb_mime = NULL WHERE id = $1', [id]);
             await client.query('COMMIT');
             res.json({ id });
         } catch (err) {
