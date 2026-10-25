@@ -1,2 +1,13 @@
 node_modules/
-.env
+.env.DS_Store
+
+# Local experiments / scratch — not part of the server
+compare-models.js
+dump-detections.js
+run-tiling-test.js
+detections.json
+tiles/
+tiles_meta.json
+wall-image.jpg
+wall_clean.jpg
+wall_dense.jpg
