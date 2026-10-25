@@ -55,6 +55,16 @@
         }
     }
 
+    // Like requireAuth but never rejects: sets req.userId if a valid token is present.
+    function optionalAuth(req, res, next) {
+        const header = req.headers.authorization || '';
+        const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+        if (token) {
+            try { req.userId = jwt.verify(token, JWT_SECRET).sub; } catch { /* ignore */ }
+        }
+        next();
+    }
+
     // Neon requires SSL. rejectUnauthorized:false avoids local cert-chain issues.
     const pool = new Pool({
         connectionString: process.env.DATABASE_URL,
@@ -408,12 +418,17 @@
         }
     });
 
-    app.get('/climbs', async(req, res) => {
+    app.get('/climbs', optionalAuth, async (req, res) => {
         try{
             const result = await pool.query(
-                `SELECT c.id, c.name, c.grade, c.description,
-                        (SELECT count(DISTINCT cs.user_id)::int FROM climb_sends cs WHERE cs.climb_id = c.id) AS send_count
-                 FROM climbs c WHERE c.archived_at IS NULL ORDER BY c.name`
+                `SELECT c.id, c.name, c.grade, c.description, c.created_at,
+                        COALESCE(u.display_name, u.name, u.email) AS setter_name,
+                        (SELECT count(DISTINCT cs.user_id)::int FROM climb_sends cs WHERE cs.climb_id = c.id) AS send_count,
+                        EXISTS (SELECT 1 FROM climb_sends cs WHERE cs.climb_id = c.id AND cs.user_id = $1) AS sent_by_me
+                 FROM climbs c
+                 LEFT JOIN users u ON u.id = c.creator_id
+                 WHERE c.archived_at IS NULL ORDER BY c.name`,
+                [req.userId || null]
             );
             res.json(result.rows);
         } catch(err){
