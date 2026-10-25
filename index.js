@@ -430,7 +430,23 @@
                  WHERE c.archived_at IS NULL ORDER BY c.name`,
                 [req.userId || null]
             );
-            res.json(result.rows);
+            const climbs = result.rows;
+
+            // Attach each climb's holds (points + role) for list thumbnails.
+            const holdsRes = await pool.query(
+                `SELECT ch.climb_id, h.points, ch.role
+                 FROM climb_holds ch
+                 JOIN holds h ON h.id = ch.hold_id
+                 JOIN climbs c ON c.id = ch.climb_id
+                 WHERE c.archived_at IS NULL`
+            );
+            const byClimb = {};
+            for (const r of holdsRes.rows) {
+                (byClimb[r.climb_id] ||= []).push({ points: r.points, role: r.role });
+            }
+            for (const c of climbs) c.holds = byClimb[c.id] || [];
+
+            res.json(climbs);
         } catch(err){
             res.status(500).json({error: err.message});
         }
