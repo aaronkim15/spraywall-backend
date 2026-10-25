@@ -552,11 +552,89 @@
     app.get('/auth/me', requireAuth, async (req, res) => {
         try {
             const result = await pool.query(
-                'SELECT id, email, display_name FROM users WHERE id = $1',
+                `SELECT id, email, display_name,
+                        (avatar_data IS NOT NULL) AS has_avatar,
+                        md5(avatar_data) AS avatar_version
+                 FROM users WHERE id = $1`,
                 [req.userId]
             );
             if (result.rows.length === 0) return res.status(404).json({ error: 'user not found' });
             res.json({ user: result.rows[0] });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // PATCH /auth/email — change the signed-in user's email.
+    app.patch('/auth/email', requireAuth, async (req, res) => {
+        const { email } = req.body;
+        if (!email || !email.includes('@')) {
+            return res.status(400).json({ error: 'a valid email is required' });
+        }
+        try {
+            const result = await pool.query(
+                `UPDATE users SET email = lower($1) WHERE id = $2
+                 RETURNING id, email, display_name,
+                           (avatar_data IS NOT NULL) AS has_avatar,
+                           md5(avatar_data) AS avatar_version`,
+                [email, req.userId]
+            );
+            res.json({ user: result.rows[0] });
+        } catch (err) {
+            if (err.code === '23505') return res.status(409).json({ error: 'email already in use' });
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // PATCH /auth/password — change password after verifying the current one.
+    app.patch('/auth/password', requireAuth, async (req, res) => {
+        const { currentPassword, newPassword } = req.body;
+        if (!currentPassword || !newPassword || newPassword.length < 8) {
+            return res.status(400).json({ error: 'current password and a new password (min 8 chars) are required' });
+        }
+        try {
+            const result = await pool.query('SELECT password_hash FROM users WHERE id = $1', [req.userId]);
+            if (result.rows.length === 0) return res.status(404).json({ error: 'user not found' });
+
+            const ok = await bcrypt.compare(currentPassword, result.rows[0].password_hash);
+            if (!ok) return res.status(400).json({ error: 'current password is incorrect' });
+
+            const hash = await bcrypt.hash(newPassword, 10);
+            await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, req.userId]);
+            res.json({ ok: true });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // POST /auth/avatar — upload/replace the signed-in user's profile photo.
+    app.post('/auth/avatar', requireAuth, upload.single('image'), async (req, res) => {
+        if (!req.file) return res.status(400).json({ error: 'image file required' });
+        if (!isImageBuffer(req.file.buffer)) {
+            return res.status(400).json({ error: 'file is not a valid image' });
+        }
+        try {
+            const result = await pool.query(
+                `UPDATE users SET avatar_data = $1, avatar_mime = $2 WHERE id = $3
+                 RETURNING md5(avatar_data) AS avatar_version`,
+                [req.file.buffer, req.file.mimetype, req.userId]
+            );
+            res.json({ ok: true, avatar_version: result.rows[0].avatar_version });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // GET /users/:id/avatar — stream a user's profile photo (public; cached by content hash).
+    app.get('/users/:id/avatar', async (req, res) => {
+        const { id } = req.params;
+        try {
+            const result = await pool.query('SELECT avatar_data, avatar_mime FROM users WHERE id = $1', [id]);
+            const row = result.rows[0];
+            if (!row || !row.avatar_data) return res.status(404).json({ error: 'no avatar' });
+            res.set('Content-Type', row.avatar_mime || 'image/jpeg');
+            res.set('Cache-Control', 'public, max-age=31536000, immutable');
+            res.send(row.avatar_data);
         } catch (err) {
             res.status(500).json({ error: err.message });
         }
