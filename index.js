@@ -88,9 +88,13 @@
             'SELECT h.points, ch.role FROM climb_holds ch JOIN holds h ON h.id = ch.hold_id WHERE ch.climb_id = $1',
             [climbId]
         );
-        const meta = await sharp(imgData).metadata();
-        const W = meta.width, H = meta.height;
-        const stroke = Math.max(2, Math.round(Math.min(W, H) * 0.006));
+        // Resize the photo first, then overlay the SVG sized to the RESIZED image,
+        // so the composite is guaranteed to fit exactly. .rotate() bakes EXIF
+        // orientation so the outlines line up with what the phone displayed.
+        const base = await sharp(imgData).rotate().resize({ width: 400, withoutEnlargement: true }).toBuffer();
+        const m = await sharp(base).metadata();
+        const W = m.width, H = m.height;
+        const stroke = Math.max(2, Math.round(Math.min(W, H) * 0.012));
         const polys = holdsRes.rows.map((r) => {
             if (!r.points) return '';
             const pts = r.points.map((pt) => `${(pt.x * W).toFixed(1)},${(pt.y * H).toFixed(1)}`).join(' ');
@@ -99,9 +103,8 @@
         }).join('');
         const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">${polys}</svg>`;
 
-        const buf = await sharp(imgData)
+        const buf = await sharp(base)
             .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-            .resize({ width: 400, withoutEnlargement: true })
             .jpeg({ quality: 72 })
             .toBuffer();
 
