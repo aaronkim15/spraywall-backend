@@ -50,6 +50,8 @@ router.get('/climbs', optionalAuth, async (req, res) => {
             `SELECT c.id, c.name, c.grade, c.description, c.created_at,
                     COALESCE(u.display_name, u.name, u.email) AS setter_name,
                     md5(c.thumb_data) AS thumb_version,
+                    (SELECT round(avg(cr.stars), 1)::float FROM climb_ratings cr WHERE cr.climb_id = c.id) AS rating,
+                    (SELECT count(*)::int FROM climb_ratings cr WHERE cr.climb_id = c.id) AS rating_count,
                     (SELECT count(DISTINCT cs.user_id)::int FROM climb_sends cs WHERE cs.climb_id = c.id) AS send_count,
                     EXISTS (SELECT 1 FROM climb_sends cs WHERE cs.climb_id = c.id AND cs.user_id = $1) AS sent_by_me
              FROM climbs c
@@ -87,7 +89,7 @@ router.get('/climbs/:id/thumb', async (req, res) => {
     }
 });
 
-router.get('/climbs/:id', async (req, res) => {
+router.get('/climbs/:id', optionalAuth, async (req, res) => {
     const { id } = req.params;
     try {
 
@@ -221,6 +223,36 @@ router.delete('/climbs/sends/:sendId', requireAuth, async (req, res) => {
             [sendId, req.userId]
         );
         if (result.rows.length === 0) return res.status(404).json({ error: 'send not found or not yours' });
+        res.status(204).end();
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /climbs/:id/rate — set/update the current user's star rating (1-5).
+router.post('/climbs/:id/rate', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    const stars = parseInt(req.body.stars, 10);
+    if (isNaN(stars) || stars < 1 || stars > 5) {
+        return res.status(400).json({ error: 'stars must be an integer 1-5' });
+    }
+    try {
+        await pool.query(
+            `INSERT INTO climb_ratings (climb_id, user_id, stars) VALUES ($1, $2, $3)
+             ON CONFLICT (climb_id, user_id) DO UPDATE SET stars = EXCLUDED.stars`,
+            [id, req.userId, stars]
+        );
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// DELETE /climbs/:id/rate — remove the current user's rating.
+router.delete('/climbs/:id/rate', requireAuth, async (req, res) => {
+    const { id } = req.params;
+    try {
+        await pool.query('DELETE FROM climb_ratings WHERE climb_id = $1 AND user_id = $2', [id, req.userId]);
         res.status(204).end();
     } catch (err) {
         res.status(500).json({ error: err.message });
