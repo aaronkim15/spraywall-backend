@@ -7,7 +7,7 @@ const router = express.Router();
 
 // POST /climbs — save a new climb with its holds
 router.post('/climbs', requireAuth, async (req, res) => {
-    const { name, grade, description, feetRules, wallId, holds } = req.body;
+    const { name, grade, angle, description, feetRules, wallId, holds } = req.body;
 
     if (!name || !name.trim()) {
         return res.status(400).json({ error: 'name is required' });
@@ -21,8 +21,8 @@ router.post('/climbs', requireAuth, async (req, res) => {
 
         // creator comes from the auth token, never from the client body
         const climbResult = await client.query(
-            'INSERT INTO climbs (wall_id, creator_id, name, grade, description, feet_rules) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-            [wallId, req.userId, name.trim(), grade || null, description || null, feetRules || null]
+            'INSERT INTO climbs (wall_id, creator_id, name, grade, angle, description, feet_rules) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+            [wallId, req.userId, name.trim(), grade || null, angle || null, description || null, feetRules || null]
         );
         const climbId = climbResult.rows[0].id;
 
@@ -47,7 +47,7 @@ router.post('/climbs', requireAuth, async (req, res) => {
 router.get('/climbs', optionalAuth, async (req, res) => {
     try{
         const result = await pool.query(
-            `SELECT c.id, c.name, c.grade, c.description, c.created_at,
+            `SELECT c.id, c.name, c.grade, c.angle, c.description, c.created_at,
                     COALESCE(u.display_name, u.name, u.email) AS setter_name,
                     md5(c.thumb_data) AS thumb_version,
                     (SELECT round(avg(cr.stars), 1)::float FROM climb_ratings cr WHERE cr.climb_id = c.id) AS rating,
@@ -94,7 +94,7 @@ router.get('/climbs/:id', optionalAuth, async (req, res) => {
     try {
 
         const climbResult = await pool.query(
-            `SELECT c.id, c.name, c.grade, c.description, c.feet_rules, c.created_at,
+            `SELECT c.id, c.name, c.grade, c.angle, c.description, c.feet_rules, c.created_at,
                     c.creator_id,
                     COALESCE(u.display_name, u.name, u.email) AS setter_name
              FROM climbs c
@@ -155,7 +155,7 @@ router.delete('/climbs/:id', requireAuth, async (req, res) => {
 // PUT /climbs/:id — update a climb and replace its holds. Creator only.
 router.put('/climbs/:id', requireAuth, async (req, res) => {
     const { id } = req.params;
-    const { name, grade, description, feetRules, holds } = req.body;
+    const { name, grade, angle, description, feetRules, holds } = req.body;
 
     if (!name || !name.trim()) {
         return res.status(400).json({ error: 'name is required' });
@@ -168,8 +168,8 @@ router.put('/climbs/:id', requireAuth, async (req, res) => {
         await client.query('BEGIN');
 
         const upd = await client.query(
-            'UPDATE climbs SET name = $1, grade = $2, description = $3, feet_rules = $4 WHERE id = $5 AND creator_id = $6 AND archived_at IS NULL RETURNING id',
-            [name.trim(), grade || null, description || null, feetRules || null, id, req.userId]
+            'UPDATE climbs SET name = $1, grade = $2, angle = $3, description = $4, feet_rules = $5 WHERE id = $6 AND creator_id = $7 AND archived_at IS NULL RETURNING id',
+            [name.trim(), grade || null, angle || null, description || null, feetRules || null, id, req.userId]
         );
         if (upd.rows.length === 0) {
             await client.query('ROLLBACK');
