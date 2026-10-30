@@ -1,6 +1,6 @@
 const express = require('express');
 const pool = require('../db');
-const { upload, isImageBuffer } = require('../lib/images');
+const { upload, isImageBuffer, generateWallDisplay } = require('../lib/images');
 const { SAM_ENDPOINT, refineWithSam } = require('../lib/sam');
 const router = express.Router();
 
@@ -79,19 +79,36 @@ router.post('/walls/:id/image', upload.single('image'), async (req, res) => {
     }
 });
 
-// GET /walls/:id/image — stream the stored photo.
+// GET /walls/:id/image — downscaled display photo by default (fast);
+// ?res=full returns the original full-resolution photo (for the zoom view).
 router.get('/walls/:id/image', async (req, res) => {
     const { id } = req.params;
+    const full = req.query.res === 'full';
     try {
+        if (full) {
+            const result = await pool.query('SELECT image_data, image_mime FROM walls WHERE id = $1', [id]);
+            const row = result.rows[0];
+            if (!row || !row.image_data) return res.status(404).json({ error: 'no image' });
+            res.set('Content-Type', row.image_mime || 'image/jpeg');
+            res.set('Cache-Control', 'public, max-age=31536000, immutable');
+            return res.send(row.image_data);
+        }
+
         const result = await pool.query(
-            'SELECT image_data, image_mime FROM walls WHERE id = $1',
+            'SELECT display_data, display_mime, (image_data IS NOT NULL) AS has_image FROM walls WHERE id = $1',
             [id]
         );
         const row = result.rows[0];
-        if (!row || !row.image_data) return res.status(404).json({ error: 'no image' });
-        res.set('Content-Type', row.image_mime || 'image/jpeg');
+        if (!row || !row.has_image) return res.status(404).json({ error: 'no image' });
+        let data = row.display_data, mime = row.display_mime;
+        if (!data) {
+            data = await generateWallDisplay(id); // lazy-generate, then cached
+            mime = 'image/jpeg';
+            if (!data) return res.status(404).json({ error: 'no image' });
+        }
+        res.set('Content-Type', mime || 'image/jpeg');
         res.set('Cache-Control', 'public, max-age=31536000, immutable');
-        res.send(row.image_data);
+        res.send(data);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -103,7 +120,8 @@ router.delete('/walls/:id/image', async (req, res) => {
     try {
         const result = await pool.query(
             `UPDATE walls
-             SET image_data = NULL, image_mime = NULL, image_width = NULL, image_height = NULL
+             SET image_data = NULL, image_mime = NULL, image_width = NULL, image_height = NULL,
+                 display_data = NULL, display_mime = NULL
              WHERE id = $1 RETURNING id`,
             [id]
         );
