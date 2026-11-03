@@ -1,0 +1,36 @@
+# Brings up Postgres + the backend together: `docker compose up -d --build`.
+# Reads secrets from a `.env` file beside this one (see .env.example).
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spraywall
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spraywall}
+      POSTGRES_DB: spraywall
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # data survives container rebuilds
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spraywall -d spraywall"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy        # wait until Postgres accepts connections
+    environment:
+      DATABASE_URL: postgresql://spraywall:${POSTGRES_PASSWORD:-spraywall}@db:5432/spraywall
+      DATABASE_SSL: disable                # local Postgres has no TLS
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET}
+      ROBOFLOW_API_KEY: ${ROBOFLOW_API_KEY:-}
+      SAM_ENDPOINT_URL: ${SAM_ENDPOINT_URL:-}
+    ports:
+      - "3000:3000"
+
+volumes:
+  pgdata:

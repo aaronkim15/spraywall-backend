@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+.env
+.git
+.gitignore
+PI_MIGRATION.md
+tiles/
+tiles_meta.json
+detections.json
+*.jpg
