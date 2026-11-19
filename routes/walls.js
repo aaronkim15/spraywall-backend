@@ -135,6 +135,10 @@ router.delete('/walls/:id/image', async (req, res) => {
 
 router.post('/walls/:id/detect', async (req, res) => {
     const { id } = req.params;
+    if (!ROBOFLOW_API_KEY) {
+        console.log('detect: ROBOFLOW_API_KEY is not set');
+        return res.status(500).json({ error: 'ROBOFLOW_API_KEY is not set on the server' });
+    }
 
     try {
         // 1. Load this wall's uploaded photo from the DB.
@@ -152,7 +156,16 @@ router.post('/walls/:id/detect', async (req, res) => {
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: imageBase64,
         });
-        const rfData = await rfRes.json();
+        const rfData = await rfRes.json().catch(() => ({}));
+
+        // Surface Roboflow's real answer instead of crashing on a missing field.
+        if (!rfRes.ok || !rfData.image || !Array.isArray(rfData.predictions)) {
+            console.log('detect: Roboflow error', rfRes.status, JSON.stringify(rfData).slice(0, 300));
+            return res.status(502).json({
+                error: `Roboflow ${rfRes.status}: ${rfData.message || rfData.error || 'unexpected response'}`,
+            });
+        }
+        console.log(`detect: Roboflow returned ${rfData.predictions.length} holds`);
 
         const imgW = rfData.image.width;
         const imgH = rfData.image.height;
